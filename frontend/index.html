@@ -3,75 +3,183 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>INNOBLOCK 2.0 Starter dApp</title>
-  <link rel="icon" href="data:,">
+  <meta name="theme-color" content="#f5f7ff">
+  <title>NexChain - Transact smarter. Stay safer.</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.5/dist/ethers.umd.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js" defer></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <div>
-      <h1>Proof Registry</h1>
-      <p class="sub">INNOBLOCK 2.0 starter: store a fingerprint of any text on-chain, then prove it was never changed.</p>
+  <header class="site-header" id="home">
+    <a class="brand" href="#home" aria-label="NexChain home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 2.4 20 7v10l-8 4.6L4 17V7l8-4.6Z" stroke="currentColor" stroke-width="2.2"/><path d="m8.6 10 3.4-2 3.4 2v4l-3.4 2-3.4-2v-4Z" fill="currentColor" opacity=".25"/></svg>
+      </span>
+      <span>NexChain</span>
+    </a>
+
+    <nav class="main-nav" aria-label="Main navigation">
+      <a class="is-active" href="#home">Home</a>
+      <a href="#prepare">Analyze</a>
+      <a href="#history">History</a>
+      <a href="#trusted">Trusted Addresses</a>
+    </nav>
+
+    <div class="header-actions">
+      <span class="network-chip"><span class="network-icon">◆</span> Sepolia Testnet</span>
+      <button class="wallet-chip" id="connectWallet" type="button">
+        <span class="wallet-dot" id="walletDot"></span>
+        <span id="walletAddress">Connect wallet</span>
+      </button>
     </div>
-    <span id="network-badge" class="badge"></span>
   </header>
 
-  <div id="setup-warning" class="banner hidden"></div>
-
   <main>
-    <!-- 1. Wallet -->
-    <section class="card">
-      <h2><span class="step">1</span> Connect your wallet</h2>
-      <p class="hint">MetaMask (or any browser wallet) on the network shown above.</p>
-      <button id="connect-btn">Connect wallet</button>
-      <dl class="facts">
-        <dt>Address</dt><dd id="wallet-address">Not connected</dd>
-        <dt>Balance</dt><dd id="wallet-balance">-</dd>
-      </dl>
-      <div id="connect-status" class="status"></div>
+    <section class="progress-rail" aria-label="NexChain security flow">
+      <div class="rail-step is-current"><b>1</b><span>Prepare</span></div>
+      <i></i><div class="rail-step"><b>2</b><span>Analyze</span></div>
+      <i></i><div class="rail-step"><b>3</b><span>Review</span></div>
+      <i></i><div class="rail-step"><b>4</b><span>MetaMask</span></div>
+      <i></i><div class="rail-step"><b>5</b><span>Submitted</span></div>
+      <i></i><div class="rail-step"><b>6</b><span>Confirmed</span></div>
     </section>
 
-    <!-- 2. User signs -->
-    <section class="card">
-      <h2><span class="step">2</span> Store from your wallet</h2>
-      <p class="hint">You sign the transaction in MetaMask and pay the (test) gas.</p>
-      <textarea id="wallet-text" rows="3" placeholder="Type anything: a certificate, a vote, a land record..."></textarea>
-      <button id="wallet-store-btn">Store fingerprint on-chain</button>
-      <div id="wallet-status" class="status"></div>
-    </section>
+    <section class="workspace" id="prepare">
+      <div class="hero-panel">
+        <p class="eyebrow">AI-POWERED WALLET SECURITY</p>
+        <h1>Transact<br>Smarter.<br><em>Stay Safer.</em></h1>
+        <p class="hero-copy">NexChain explains any blockchain transaction in simple language before you sign.</p>
 
-    <!-- 3. Backend signs -->
-    <section class="card">
-      <h2><span class="step">3</span> AI decision, recorded on-chain</h2>
-      <p class="hint">The backend asks an AI model, then signs with its own wallet. No API key? It returns a demo answer.</p>
-      <textarea id="ai-prompt" rows="2" placeholder="e.g. Should loan application #12 be approved? Income 40k, debt 5k."></textarea>
-      <button id="ai-ask-btn">Ask the AI</button>
-      <textarea id="ai-decision" rows="3" placeholder="The AI's decision appears here. You can edit it before storing."></textarea>
-      <button id="ai-store-btn">Store decision on-chain</button>
-      <div id="ai-status" class="status"></div>
-    </section>
+        <div class="benefit-list">
+          <article class="benefit"><span class="benefit-icon">✦</span><div><strong>AI Analysis</strong><p>Explains transactions in easy terms</p></div></article>
+          <article class="benefit"><span class="benefit-icon">⌾</span><div><strong>Risk Detection</strong><p>Detects suspicious and high-risk activity</p></div></article>
+          <article class="benefit"><span class="benefit-icon">◇</span><div><strong>Blockchain Audit</strong><p>Stores analysis records on-chain</p></div></article>
+        </div>
 
-    <!-- 4. Verify -->
-    <section class="card wide">
-      <h2><span class="step">4</span> Records and verification</h2>
-      <p class="hint">Records saved by the backend. Edit any text and press Verify: one changed character and it fails.</p>
-      <button id="refresh-btn" class="secondary">Refresh records</button>
-      <div id="records"></div>
-      <h3>Check any record by id</h3>
-      <p class="hint">Works for records stored from a wallet in step 2 too: enter the id and the exact text.</p>
-      <div class="record">
-        <input id="check-id" class="rid-input" type="number" min="1" placeholder="id">
-        <input id="check-text" placeholder="Exact text that was stored">
-        <button id="check-btn" class="secondary">Verify</button>
-        <span id="check-result" class="result"></span>
+        <div class="shield-orbit" aria-hidden="true">
+          <span class="orb orb-one"></span><span class="orb orb-two"></span><span class="orb orb-three"></span>
+          <div class="shield">
+            <svg viewBox="0 0 72 82" fill="none"><path d="M36 3 64 14v23c0 20-11.7 34.6-28 42C19.7 71.6 8 57 8 37V14L36 3Z" fill="url(#shieldGradient)"/><path d="M36 18 49 23v12.5c0 9.1-4.6 16.1-13 20.5-8.4-4.4-13-11.4-13-20.5V23l13-5Z" fill="#fff" opacity=".86"/><defs><linearGradient id="shieldGradient" x1="10" y1="4" x2="66" y2="76" gradientUnits="userSpaceOnUse"><stop stop-color="#8676ff"/><stop offset="1" stop-color="#4c42db"/></linearGradient></defs></svg>
+          </div>
+        </div>
       </div>
+
+      <section class="transaction-card" aria-labelledby="prepare-title">
+        <div class="card-title"><div><p class="eyebrow">STEP 01</p><h2 id="prepare-title">Prepare Transaction</h2></div><span class="secure-pill">◈ Protected flow</span></div>
+
+        <div class="address-grid">
+          <label class="field"><span>From <small>(your wallet)</small></span><div class="wallet-field"><span class="account-avatar">◉</span><strong id="fromAccount">Connect MetaMask</strong><small id="fromAddress">Your account will appear here</small></div></label>
+          <span class="transfer-arrow" aria-hidden="true">→</span>
+          <label class="field"><span for="recipient">To <small>(recipient)</small></span><input id="recipient" type="text" spellcheck="false" autocomplete="off" placeholder="0x... recipient address"></label>
+        </div>
+
+        <div class="input-grid">
+          <label class="field"><span for="amount">Amount <small>(ETH)</small></span><input id="amount" type="number" min="0" step="any" inputmode="decimal" placeholder="0.001"></label>
+          <label class="field"><span for="gas">Gas limit</span><input id="gas" type="number" min="21000" step="1" inputmode="numeric" placeholder="21000"></label>
+          <label class="field"><span for="data">Data <small>(calldata)</small></span><input id="data" class="mono-input" type="text" spellcheck="false" autocomplete="off" placeholder="0x"></label>
+        </div>
+
+        <p class="field-hint">NexChain reads the recipient, value, gas and calldata before MetaMask opens.</p>
+        <p id="formStatus" class="form-status" data-type="info">Connect MetaMask to start a protected transaction.</p>
+
+        <button id="analyzeButton" class="primary-cta" type="button"><span class="magnify">⌕</span> Analyze Transaction <span>→</span></button>
+
+        <div class="demo-area">
+          <span>Quick examples</span>
+          <div class="demo-buttons">
+            <button id="lowRiskDemo" class="demo-button" type="button">Low Risk Transfer</button>
+            <button id="highRiskDemo" class="demo-button" type="button">Large Transfer</button>
+            <button id="contractDemo" class="demo-button" type="button">Contract Interaction</button>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section class="requirements-strip" id="trusted">
+      <div><b>Reads first</b><span>To, value, gas and calldata</span></div>
+      <div><b>Explains clearly</b><span>Plain language, before signing</span></div>
+      <div><b>Protects actively</b><span>Unknown-recipient and high-value warnings</span></div>
+    </section>
+
+    <section class="history-placeholder" id="history">
+      <span class="history-icon">◌</span>
+      <div><h2>Protected transactions begin here</h2><p>Every signing request must be analyzed before it can be sent to MetaMask.</p></div>
+    </section>
+
+    <section class="confirmation-screen is-hidden" id="confirmationScreen" aria-live="polite">
+      <div class="confirmation-illustration"><span>✓</span></div>
+      <p class="eyebrow">SEPOLIA TESTNET</p>
+      <h2>Transaction Confirmed!</h2>
+      <p>Your transaction has been successfully confirmed on the Sepolia testnet.</p>
+      <div class="confirmation-details">
+        <div><span>Transaction hash</span><code id="confirmationHash">—</code></div>
+        <div><span>Status</span><b class="confirmed-badge">Confirmed</b></div>
+        <div><span>Block number</span><b id="confirmationBlock">—</b></div>
+        <div><span>Confirmed at</span><b id="confirmationTime">—</b></div>
+        <a id="confirmationLink" href="#" target="_blank" rel="noopener noreferrer">View on Sepolia Etherscan ↗</a>
+      </div>
+      <button id="newTransactionButton" class="primary-cta compact" type="button">New Transaction <span>→</span></button>
     </section>
   </main>
 
-  <footer>Built from the INNOBLOCK 2.0 starter · GCET Blockchain Club</footer>
+  <footer>NexChain · AI Wallet Security · Ethereum Sepolia</footer>
 
-  <script src="https://cdn.jsdelivr.net/npm/ethers@6.17.0/dist/ethers.umd.min.js"></script>
-  <script src="config.js"></script>
-  <script src="app.js"></script>
+  <div id="analysisModal" class="modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="analysisModalTitle">
+    <div class="modal-card analysis-modal-card">
+      <button id="analysisClose" class="modal-close" type="button" aria-label="Close analysis">×</button>
+      <div id="analyzingView">
+        <div class="bot-loader"><span class="loader-ring"></span><span class="bot-face">◉</span></div>
+        <h2 id="analysisModalTitle">Analyzing Transaction</h2>
+        <p class="modal-intro">Our AI agent is checking this transaction for risks. Please wait.</p>
+        <ol class="analysis-steps" id="analysisSteps">
+          <li>Reading transaction data</li><li>Validating addresses</li><li>Identifying transaction type</li><li>Calculating security risk</li><li>Generating AI explanation</li><li>Preparing blockchain audit record</li>
+        </ol>
+      </div>
+
+      <div id="analysisResultView" class="is-hidden">
+        <div class="modal-brand"><span class="brand-mark small">◇</span><strong>NexChain</strong></div>
+        <div class="risk-summary" id="riskSummary">
+          <span class="risk-symbol">!</span><div><b id="analysisRisk">RISK</b><p id="riskCaption">Review before proceeding</p></div><div class="score"><small>RISK SCORE</small><strong><span id="riskScore">—</span><em>/100</em></strong><i><span id="riskMeter"></span></i></div>
+        </div>
+        <dl class="analysis-details">
+          <div><dt>Transaction type</dt><dd id="analysisType">—</dd></div>
+          <div><dt>Amount</dt><dd id="analysisAmount">—</dd></div>
+          <div><dt>Recipient</dt><dd id="analysisRecipient">—</dd></div>
+          <div><dt>Gas limit</dt><dd id="analysisGas">—</dd></div>
+          <div><dt>Data (calldata)</dt><dd id="analysisData">—</dd></div>
+        </dl>
+        <div class="warning-box"><span>⚠</span><div><b>Security Warning</b><p id="analysisWarning">—</p></div></div>
+        <div class="explanation-box"><span>✦</span><div><b>AI Explanation</b><p id="analysisExplanation">—</p></div></div>
+        <div class="audit-row"><span>Analysis fingerprint</span><code id="analysisHash">—</code><a id="auditLink" href="#" target="_blank" rel="noopener noreferrer" class="is-hidden">View audit ↗</a></div>
+        <div class="modal-actions"><button id="analysisDismiss" class="secondary-button" type="button">Close</button><button id="signButton" class="primary-cta modal-cta" type="button" disabled>Proceed to MetaMask <span>→</span></button></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="handoffModal" class="modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="handoffTitle">
+    <div class="modal-card handoff-card">
+      <button id="handoffClose" class="modal-close" type="button" aria-label="Close">×</button>
+      <div class="fox-mark">🦊</div>
+      <p class="eyebrow">STEP 04</p><h2 id="handoffTitle">Ready for MetaMask</h2>
+      <p>Analysis is complete. MetaMask will now show the final transaction confirmation.</p>
+      <div class="handoff-details"><div><span>To</span><code id="handoffRecipient">—</code></div><div><span>Amount</span><b id="handoffAmount">—</b></div></div>
+      <button id="openMetaMaskButton" class="primary-cta" type="button">Open MetaMask <span>→</span></button>
+    </div>
+  </div>
+
+  <div id="submittedModal" class="modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="submittedTitle">
+    <div class="modal-card submitted-card">
+      <button id="submittedClose" class="modal-close" type="button" aria-label="Close">×</button>
+      <div class="sent-mark">➤</div>
+      <p class="eyebrow">STEP 05</p><h2 id="submittedTitle">Transaction Submitted!</h2>
+      <p>Your transaction has been sent to the Sepolia testnet.</p>
+      <div class="submitted-details"><div><span>Transaction hash</span><code id="transactionHash">—</code></div><div><span>Status</span><b class="pending-badge">Pending <i></i></b></div><a id="transactionLink" href="#" target="_blank" rel="noopener noreferrer">View on Sepolia Etherscan ↗</a></div>
+      <p class="pending-note"><span>i</span> The transaction is being processed on the blockchain. This may take a few seconds.</p>
+      <button id="submittedDone" class="secondary-button wide" type="button">Continue waiting</button>
+    </div>
+  </div>
+
+  <p id="status" class="screen-reader-status" role="status" aria-live="polite"></p>
 </body>
 </html>

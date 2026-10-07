@@ -1,22 +1,4 @@
-# Secrets: never commit these
 .env
-*.env
-!.env.example
-
-# Python
 venv/
-.venv/
 __pycache__/
 *.pyc
-
-# Local data
-backend/records.db
-
-# Node (if you add Hardhat or a JS tool)
-node_modules/
-
-# Editors / OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db

@@ -4,102 +4,79 @@
     "inputs": [
       {
         "indexed": true,
-        "internalType": "uint256",
-        "name": "id",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
         "internalType": "bytes32",
-        "name": "hash",
+        "name": "analysisHash",
         "type": "bytes32"
       },
       {
-        "indexed": true,
-        "internalType": "address",
-        "name": "by",
-        "type": "address"
+        "indexed": false,
+        "internalType": "string",
+        "name": "txType",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "risk",
+        "type": "string"
       },
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "time",
+        "name": "timestamp",
         "type": "uint256"
       }
     ],
-    "name": "RecordStored",
+    "name": "AnalysisRecorded",
     "type": "event"
   },
   {
-    "inputs": [],
-    "name": "count",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "name": "records",
-    "outputs": [
-      {
-        "internalType": "bytes32",
-        "name": "",
-        "type": "bytes32"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
     "inputs": [
       {
         "internalType": "bytes32",
-        "name": "hash",
+        "name": "analysisHash",
         "type": "bytes32"
-      }
-    ],
-    "name": "store",
-    "outputs": [
+      },
       {
-        "internalType": "uint256",
-        "name": "id",
-        "type": "uint256"
+        "internalType": "string",
+        "name": "txType",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "risk",
+        "type": "string"
       }
     ],
+    "name": "recordAnalysis",
+    "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
   },
   {
     "inputs": [
       {
-        "internalType": "uint256",
-        "name": "id",
-        "type": "uint256"
-      },
-      {
         "internalType": "bytes32",
-        "name": "hash",
+        "name": "",
         "type": "bytes32"
       }
     ],
-    "name": "verify",
+    "name": "analyses",
     "outputs": [
       {
-        "internalType": "bool",
-        "name": "",
-        "type": "bool"
+        "internalType": "string",
+        "name": "txType",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "risk",
+        "type": "string"
+      },
+      {
+        "internalType": "uint256",
+        "name": "timestamp",
+        "type": "uint256"
       }
     ],
     "stateMutability": "view",

@@ -1,191 +1,534 @@
 """
-INNOBLOCK 2.0 starter backend.
+AI Wallet Guard - Flask backend.
 
-Routes
-  GET  /health      Is the server up, and can it reach the chain?
-  POST /ai/decide   Ask an AI model for a decision (returns a demo answer if API_KEY is empty)
-  POST /records     Hash a text, store the hash on-chain, save the full text in the database
-  GET  /records     List saved records, so the frontend can verify each one on-chain
-
-Run locally:  python app.py
-On Render:    gunicorn app:app --timeout 120
+The backend:
+1. Classifies and decodes a prepared transaction.
+2. Applies deterministic security rules.
+3. Generates a short AI explanation (or a safe demo explanation).
+4. Stores only a fingerprint of the analysis on the Sepolia audit contract.
 """
+
 import hashlib
 import json
 import os
-import sqlite3
+import re
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
-import psycopg
 import requests
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from psycopg.rows import dict_row
 from web3 import Web3
 from werkzeug.exceptions import HTTPException
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(HERE, ".env"))  # reads backend/.env into environment variables
+HERE = Path(__file__).resolve().parent
+load_dotenv(HERE / ".env")
 
-# ---------------------------------------------------------------- settings
+# ----------------------------- configuration -----------------------------
+
 REQUIRED = ["RPC_URL", "PRIVATE_KEY", "CONTRACT_ADDRESS"]
 missing = [name for name in REQUIRED if not os.getenv(name)]
 if missing:
-    raise SystemExit(f"Missing in backend/.env: {', '.join(missing)}. "
-                     "Copy .env.example to .env and fill it in.")
+    raise SystemExit(
+        "Missing in backend/.env: " + ", ".join(missing) +
+        ". Copy .env.example to .env and fill it in."
+    )
 
 RPC_URL = os.getenv("RPC_URL")
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
-EXPLORER_URL = os.getenv("EXPLORER_URL", "https://sepolia.etherscan.io").rstrip("/")
+EXPLORER_URL = os.getenv(
+    "EXPLORER_URL", "https://sepolia.etherscan.io"
+).rstrip("/")
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
-DATABASE_URL = os.getenv("DATABASE_URL", "")  # empty = local SQLite file
 
-AI_API_KEY = os.getenv("API_KEY", "")
-AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+API_KEY = os.getenv("API_KEY", "")
+AI_BASE_URL = os.getenv(
+    "AI_BASE_URL", "https://api.openai.com/v1"
+).rstrip("/")
 AI_MODEL = os.getenv("AI_MODEL", "")
-AI_SYSTEM_PROMPT = os.getenv(
-    "AI_SYSTEM_PROMPT",
-    "You are a decision engine. Reply with one short decision and a one-line reason.",
-)
 
-# ---------------------------------------------------------------- app + chain
+# Easy-to-change security thresholds.
+HIGH_VALUE_ETH = Decimal(os.getenv("HIGH_VALUE_ETH", "0.5"))
+
+# Common EVM function selectors.
+APPROVE_SELECTOR = "0x095ea7b3"          # approve(address,uint256)
+SET_APPROVAL_FOR_ALL_SELECTOR = "0xa22cb465"  # setApprovalForAll(address,bool)
+TRANSFER_FROM_SELECTOR = "0x23b872dd"   # transferFrom(address,address,uint256)
+SAFE_TRANSFER_FROM_SELECTOR = "0x42842e0e"
+SAFE_TRANSFER_FROM_DATA_SELECTOR = "0xb88d4fde"
+
+# A tiny local list. Add only addresses whose identity is actually known.
+# The deployed AI Wallet Guard audit contract is known automatically below.
+KNOWN_ADDRESSES = {}
+
+# ----------------------------- app + blockchain --------------------------
+
 app = Flask(__name__)
-CORS(app, origins=[FRONTEND_ORIGIN])  # lets the frontend (another domain) call this API
+CORS(app, resources={r"/*": {"origins": FRONTEND_ORIGIN}})
 
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
-account = w3.eth.account.from_key(PRIVATE_KEY)  # the backend's own burner wallet
+if not w3.is_connected():
+    raise SystemExit("Unable to connect to RPC_URL.")
 
-with open(os.path.join(HERE, "abi.json")) as f:
-    contract = w3.eth.contract(address=Web3.to_checksum_address(CONTRACT_ADDRESS), abi=json.load(f))
+account = w3.eth.account.from_key(PRIVATE_KEY)
+CONTRACT_ADDRESS = Web3.to_checksum_address(CONTRACT_ADDRESS)
 
-# The full text of each record lives in a database. Locally that's a SQLite file.
-# When you deploy, set DATABASE_URL to a Postgres connection string (Neon / Supabase):
-# Render's free disk is wiped whenever the service restarts, so SQLite would lose records.
-SQLITE_PATH = os.path.join(HERE, "records.db")
+with open(HERE / "abi.json", encoding="utf-8") as f:
+    contract = w3.eth.contract(
+        address=CONTRACT_ADDRESS,
+        abi=json.load(f),
+    )
 
+KNOWN_ADDRESSES[CONTRACT_ADDRESS.lower()] = "AI Wallet Guard Audit Registry"
 
-def query(sql, params=()):
-    """Run one SQL statement on Postgres (if DATABASE_URL is set) or SQLite.
-    Write SQL with ? placeholders; returns the rows as a list of dicts."""
-    if DATABASE_URL:
-        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
-            cursor = conn.execute(sql.replace("?", "%s"), params)
-            return cursor.fetchall() if cursor.description else []
-    conn = sqlite3.connect(SQLITE_PATH)
-    conn.row_factory = sqlite3.Row
+# ----------------------------- helpers -----------------------------------
+
+def normalize_data(data):
+    """Normalize transaction calldata to a lowercase 0x-prefixed string."""
+    if data is None or data == "":
+        return "0x"
+    value = str(data).strip()
+    if not value.startswith("0x"):
+        value = "0x" + value
+    if len(value) % 2 != 0:
+        raise ValueError("Transaction data must contain complete hex bytes.")
     try:
-        with conn:  # commits on success
-            rows = conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
-    finally:
-        conn.close()
+        bytes.fromhex(value[2:])
+    except ValueError as exc:
+        raise ValueError("Transaction data must be valid hexadecimal.") from exc
+    return value.lower()
 
 
-query("CREATE TABLE IF NOT EXISTS records (id BIGINT PRIMARY KEY, text TEXT, hash TEXT, tx_hash TEXT)")
+def parse_eth_value(value):
+    """Parse the ETH value supplied by the frontend."""
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError("Value must be a valid ETH amount.") from exc
+
+    if amount < 0:
+        raise ValueError("Value cannot be negative.")
+    return amount
 
 
-def sha256_hex(text):
-    """Fingerprint of the text. The frontend computes the same value with ethers.sha256."""
-    return "0x" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+def validate_address(address, field_name):
+    """Validate an Ethereum address and return its checksum form."""
+    if not address or not Web3.is_address(address):
+        raise ValueError(f"{field_name} must be a valid Ethereum address.")
+    return Web3.to_checksum_address(address)
 
 
-def tx_url(tx_hash):
-    """Explorer link for a transaction."""
-    return f"{EXPLORER_URL}/tx/{tx_hash}"
+def selector(data):
+    """Return the first four-byte function selector from calldata."""
+    if not data or data == "0x" or len(data) < 10:
+        return ""
+    return data[:10].lower()
 
 
-def store_hash_on_chain(hash_hex):
-    """Sign store(hash) with the backend wallet, send it, and wait until it is mined.
-    Returns (record id, transaction hash)."""
-    tx = contract.functions.store(hash_hex).build_transaction({
-        "from": account.address,
-        "nonce": w3.eth.get_transaction_count(account.address, "pending"),
-    })
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-    if receipt.status != 1:
-        raise RuntimeError(f"Transaction failed on-chain: {tx_url(w3.to_hex(tx_hash))}")
-    event = contract.events.RecordStored().process_receipt(receipt)[0]
-    return event["args"]["id"], w3.to_hex(tx_hash)
+def word(data, index):
+    """Read a 32-byte ABI word from calldata by zero-based word index."""
+    start = 10 + index * 64
+    end = start + 64
+    if len(data) < end:
+        return None
+    return data[start:end]
 
 
-# ---------------------------------------------------------------- routes
-@app.get("/health")
-def health():
-    """UptimeRobot pings this to keep the server awake. It also proves the RPC works."""
-    return {
-        "ok": True,
-        "chainId": w3.eth.chain_id,
-        "block": w3.eth.block_number,
-        "wallet": account.address,
-        "contract": contract.address,
+def decode_address_word(value):
+    """Decode an ABI-encoded address word."""
+    if not value:
+        return None
+    return Web3.to_checksum_address("0x" + value[-40:])
+
+
+def decode_bool_word(value):
+    """Decode a simple ABI boolean word."""
+    if not value:
+        return None
+    return int(value, 16) != 0
+
+
+def decode_uint_word(value):
+    """Decode a simple ABI uint256 word."""
+    if not value:
+        return None
+    return int(value, 16)
+
+
+def classify_transaction(data, value_eth):
+    """Classify the prepared transaction using deterministic selectors."""
+    sel = selector(data)
+
+    if data == "0x":
+        if value_eth > 0:
+            return "transfer", "ETH transfer", {}
+        return "transfer", "Zero-value ETH transfer", {}
+
+    if sel == APPROVE_SELECTOR:
+        spender = decode_address_word(word(data, 0))
+        amount = decode_uint_word(word(data, 1))
+        unlimited = amount == (2**256 - 1) if amount is not None else False
+        return "approval", "Token approval", {
+            "approvalSpender": spender,
+            "approvalAmount": str(amount) if amount is not None else None,
+            "unlimitedApproval": unlimited,
+        }
+
+    if sel == SET_APPROVAL_FOR_ALL_SELECTOR:
+        operator = decode_address_word(word(data, 0))
+        approved = decode_bool_word(word(data, 1))
+        return "approval", "NFT approval", {
+            "approvalSpender": operator,
+            "approvalAmount": "unlimited" if approved else "revoked",
+            "unlimitedApproval": approved,
+        }
+
+    if sel in {
+        TRANSFER_FROM_SELECTOR,
+        SAFE_TRANSFER_FROM_SELECTOR,
+        SAFE_TRANSFER_FROM_DATA_SELECTOR,
+    }:
+        return "nft", "NFT transfer", {
+            "transferSelector": sel,
+        }
+
+    return "contract_call", "General contract call", {
+        "functionSelector": sel,
     }
 
 
-@app.post("/ai/decide")
-def ai_decide():
-    """Send the prompt to any OpenAI-compatible chat API and return its answer."""
-    prompt = (request.get_json(silent=True) or {}).get("prompt", "").strip()
-    if not prompt:
-        return jsonify(error="prompt is required"), 400
+def known_recipient(address):
+    """Return a local label for a known recipient, if one exists."""
+    label = KNOWN_ADDRESSES.get(address.lower())
+    if label:
+        return True, label
+    return False, "Unknown address"
 
-    if not AI_API_KEY:  # demo mode: the rest of the flow still works without a key
-        return {"decision": f"DEMO DECISION (no API_KEY set): approve \"{prompt[:80]}\"", "demo": True}
 
-    response = requests.post(
-        f"{AI_BASE_URL}/chat/completions",
-        headers={"Authorization": f"Bearer {AI_API_KEY}"},
-        json={"model": AI_MODEL, "messages": [
-            {"role": "system", "content": AI_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ]},
-        timeout=60,
+def calculate_risk(tx_type, value_eth, known, decoded):
+    """Apply mandatory deterministic security rules before AI is called."""
+    warnings = []
+    risk = "LOW"
+
+    unknown = not known
+    high_value = value_eth >= HIGH_VALUE_ETH
+    unlimited = bool(decoded.get("unlimitedApproval"))
+
+    if unknown:
+        warnings.append("The recipient is not in the trusted address list.")
+        risk = "MEDIUM"
+
+    if high_value:
+        warnings.append(
+            f"The transaction value is unusually high (>= {HIGH_VALUE_ETH} ETH)."
+        )
+        risk = "HIGH"
+
+    if tx_type == "approval" and unlimited:
+        warnings.append(
+            "This transaction requests an unlimited token/NFT approval."
+        )
+        risk = "HIGH"
+
+    if tx_type == "approval" and unknown:
+        warnings.append(
+            "This approval targets an unknown contract."
+        )
+        risk = "HIGH"
+
+    if tx_type == "contract_call" and unknown:
+        warnings.append(
+            "This is a contract interaction with an unknown recipient."
+        )
+        risk = "MEDIUM" if risk != "HIGH" else risk
+
+    warning = " ".join(warnings)
+    return risk, warning
+
+
+def fallback_explanation(tx_type, value_eth, known, risk, decoded):
+    """Create a deterministic demo explanation when no AI key is configured."""
+    if tx_type == "transfer":
+        if risk == "HIGH":
+            return (
+                f"You are sending {value_eth:g} ETH to an address that is not trusted "
+                "by this demo. The amount is unusually high, so verify the recipient carefully."
+            )
+        if known:
+            return f"You are sending {value_eth:g} ETH to a known address. Check the amount before signing."
+        return (
+            f"You are sending {value_eth:g} ETH to an address that is not in the trusted list. "
+            "Make sure you recognize the recipient before signing."
+        )
+
+    if tx_type == "approval":
+        spender = decoded.get("approvalSpender") or "this contract"
+        if decoded.get("unlimitedApproval"):
+            return (
+                f"You are giving {spender} permission to spend your tokens without a fixed limit. "
+                "Only continue if you fully trust this contract."
+            )
+        return (
+            f"You are giving {spender} permission to act on your tokens. "
+            "Only continue if you recognize the contract."
+        )
+
+    if tx_type == "nft":
+        return (
+            "You are transferring an NFT to another address or contract. "
+            "Make sure the destination and action are correct before signing."
+        )
+
+    return (
+        "You are interacting with a smart contract rather than making a simple ETH transfer. "
+        "Review the recipient and transaction details carefully before signing."
     )
-    if not response.ok:
-        return jsonify(error=f"AI provider returned {response.status_code}: {response.text[:300]}"), 502
-    decision = response.json()["choices"][0]["message"]["content"].strip()
-    return {"decision": decision, "demo": False}
 
 
-@app.post("/records")
-def create_record():
-    """Hash the text, store the hash on-chain, then save the full text with its id."""
-    text = (request.get_json(silent=True) or {}).get("text", "").strip()
-    if not text:
-        return jsonify(error="text is required"), 400
-
-    record_hash = sha256_hex(text)
-    record_id, tx_hash = store_hash_on_chain(record_hash)
-
-    query("INSERT INTO records (id, text, hash, tx_hash) VALUES (?, ?, ?, ?) "
-          "ON CONFLICT (id) DO UPDATE SET text = excluded.text, hash = excluded.hash, "
-          "tx_hash = excluded.tx_hash",
-          (record_id, text, record_hash, tx_hash))
-    return {"id": record_id, "text": text, "hash": record_hash,
-            "txHash": tx_hash, "explorerUrl": tx_url(tx_hash)}, 201
+def limit_sentences(text, maximum=3):
+    """Limit an AI response to a maximum number of sentences."""
+    cleaned = re.sub(r"\s+", " ", str(text)).strip()
+    if not cleaned:
+        return ""
+    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    return " ".join(parts[:maximum]).strip()
 
 
-@app.get("/records")
-def list_records():
-    """All saved records, newest first."""
-    rows = query("SELECT id, text, hash, tx_hash FROM records ORDER BY id DESC")
-    return {"records": [{"id": r["id"], "text": r["text"], "hash": r["hash"],
-                         "txHash": r["tx_hash"], "explorerUrl": tx_url(r["tx_hash"])} for r in rows]}
+def ai_explanation(tx_type, recipient, value_eth, decoded_action, risk,
+                   known, warning, decoded):
+    """Ask an OpenAI-compatible provider for a short explanation."""
+    fallback = fallback_explanation(
+        tx_type, value_eth, known, risk, decoded
+    )
+
+    if not API_KEY or not AI_MODEL:
+        return fallback, True
+
+    prompt = {
+        "transactionType": tx_type,
+        "recipient": recipient,
+        "valueEth": str(value_eth),
+        "decodedAction": decoded_action,
+        "risk": risk,
+        "recipientKnown": known,
+        "warning": warning,
+        "approvalSpender": decoded.get("approvalSpender"),
+        "unlimitedApproval": decoded.get("unlimitedApproval", False),
+    }
+
+    system = (
+        "You explain blockchain wallet transactions to non-technical users. "
+        "Return only a simple explanation in at most 3 sentences. "
+        "Do not change or downgrade the supplied risk level. "
+        "Do not use Solidity or ABI jargon as the main explanation. "
+        "Mention the important warning when one exists."
+    )
+
+    try:
+        response = requests.post(
+            f"{AI_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": AI_MODEL,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(prompt)},
+                ],
+                "temperature": 0.2,
+            },
+            timeout=30,
+        )
+        if not response.ok:
+            return fallback, True
+
+        content = response.json()["choices"][0]["message"]["content"]
+        explanation = limit_sentences(content, 3)
+        return explanation or fallback, False
+    except (requests.RequestException, KeyError, TypeError, ValueError):
+        return fallback, True
+
+
+def analysis_hash(payload):
+    """Create a deterministic SHA-256 fingerprint of the analysis."""
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return "0x" + hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+
+
+def tx_url(tx_hash):
+    """Build a Sepolia explorer URL for a transaction."""
+    return f"{EXPLORER_URL}/tx/{tx_hash}"
+
+
+def record_audit_on_chain(analysis_hash_hex, tx_type, risk):
+    """Record only the analysis fingerprint and minimal metadata on-chain."""
+    existing =contract.functions.analyses(analysis_hash_hex).call()
+
+    if existing[2] != 0:
+        return {
+            "auditTxHash": None,
+            "auditExplorerUrl": None,
+            "alreadyRecorded": True,
+        } 
+    fn = contract.functions.recordAnalysis(
+        analysis_hash_hex,
+        tx_type,
+        risk,
+    )
+
+    nonce = w3.eth.get_transaction_count(account.address, "pending")
+    gas = fn.estimate_gas({"from": account.address})
+
+    tx = fn.build_transaction({
+        "from": account.address,
+        "nonce": nonce,
+        "chainId": w3.eth.chain_id,
+        "gas": int(gas * 1.20),
+        "gasPrice": w3.eth.gas_price,
+    })
+
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+    if receipt.status != 1:
+        raise RuntimeError("The blockchain audit transaction failed.")
+
+    return w3.to_hex(tx_hash)
+
+
+# ----------------------------- routes ------------------------------------
+
+@app.get("/health")
+def health():
+    """Return a simple backend health response."""
+    return {"ok": True}
+
+
+@app.post("/analyze-transaction")
+def analyze_transaction():
+    """Analyze a prepared transaction before the frontend asks MetaMask to sign."""
+    body = request.get_json(silent=True) or {}
+
+    try:
+        to = validate_address(body.get("to"), "to")
+        sender = body.get("from")
+        sender = validate_address(sender, "from") if sender else None
+        value_eth = parse_eth_value(body.get("value", "0"))
+        data = normalize_data(body.get("data", "0x"))
+
+        gas = body.get("gas", "0")
+        try:
+            gas = int(gas)
+            if gas < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise ValueError("gas must be a non-negative integer.")
+
+        tx_type, decoded_action, decoded = classify_transaction(
+            data, value_eth
+        )
+        known, recipient_label = known_recipient(to)
+
+        risk, warning = calculate_risk(
+            tx_type, value_eth, known, decoded
+        )
+
+        explanation, ai_demo = ai_explanation(
+            tx_type=tx_type,
+            recipient=to,
+            value_eth=value_eth,
+            decoded_action=decoded_action,
+            risk=risk,
+            known=known,
+            warning=warning,
+            decoded=decoded,
+        )
+
+        # This is the only data fingerprinted for the blockchain audit.
+        audit_payload = {
+            "to": to.lower(),
+            "from": sender.lower() if sender else "",
+            "value": str(value_eth),
+            "data": data,
+            "gas": gas,
+            "type": tx_type,
+            "risk": risk,
+            "explanation": explanation,
+        }
+
+        fingerprint = analysis_hash(audit_payload)
+
+        try:
+            audit_tx_hash = record_audit_on_chain(
+                fingerprint, tx_type, risk
+            )
+        except Exception as exc:
+            app.logger.exception("Audit recording failed")
+            return jsonify({
+                "ok": False,
+                "error": "Security analysis completed, but the blockchain audit could not be recorded.",
+            }), 503
+
+        return jsonify({
+            "ok": True,
+            "type": tx_type,
+            "risk": risk,
+            "recipientKnown": known,
+            "recipientLabel": (
+                recipient_label if known else "Unknown address"
+            ),
+            "warning": warning,
+            "explanation": explanation,
+            "decodedAction": decoded_action,
+            "to": to,
+            "value": str(value_eth),
+            "gas": gas,
+            "data": data,
+            "aiDemo": ai_demo,
+            "analysisHash": fingerprint,
+            "auditTxHash": audit_tx_hash,
+            "auditExplorerUrl": tx_url(audit_tx_hash),
+        })
+
+    except ValueError as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+        }), 400
 
 
 @app.errorhandler(Exception)
-def handle_error(e):
-    """Always answer with JSON and a readable message, never an HTML crash page."""
-    if isinstance(e, HTTPException):
-        return jsonify(error=e.description), e.code
-    message = str(e)
-    if "insufficient funds" in message.lower():
-        message = f"The backend wallet {account.address} has no test tokens. Fund it from a faucet."
-    app.logger.exception(e)
-    return jsonify(error=message), 500
+def handle_error(error):
+    """Return JSON errors instead of Flask HTML pages or stack traces."""
+    if isinstance(error, HTTPException):
+        return jsonify({
+            "ok": False,
+            "error": error.description,
+        }), error.code
+
+    app.logger.exception(error)
+    return jsonify({
+        "ok": False,
+        "error": "Unable to analyze this transaction.",
+    }), 500
 
 
 if __name__ == "__main__":
-    app.run(port=int(os.getenv("PORT", "5000")), debug=True)
+    """Start the Flask development server."""
+    app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "5000")),
+        debug=True,
+    )
