@@ -6,7 +6,7 @@ const ACTIVE_NETWORK = "sepolia";
 const CONTRACT_ADDRESS = "0xBDCE5b0306C3c1ADb3477A0fd2729Cd6D9bdD352";
 
 // URL of the existing Flask/Node backend that exposes POST /analyze-transaction.
-const BACKEND_URL = "http://localhost:5000";
+const BACKEND_URL = "https://nex-chain-mu.vercel.app";
 
 // Kept for compatibility with the existing on-chain analysis registry.
 const CONTRACT_ABI = [
